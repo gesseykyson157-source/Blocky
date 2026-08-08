@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blockyard 3D</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+  html, body { margin:0; padding:0; overflow:hidden; background:#0B0D10; height:100%; }
+  #gameCanvas { display:block; width:100vw; height:100vh; }
+
+  .overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:16px; background:rgba(11,13,16,0.92); color:#F5F3EE; font-family:'Inter',sans-serif; z-index:50; text-align:center; padding:20px; }
+  .overlay.hidden { display:none; }
+  .logo { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:34px; }
+  .logo span { color:#FFB020; }
+  .overlay input { width:260px; max-width:80vw; background:#1E232B; border:1px solid #2E3541; border-radius:10px; padding:13px 15px; color:#F5F3EE; font-size:15px; text-align:center; }
+  .overlay input:focus { outline:none; border-color:#FFB020; }
+  .overlay button { background:#FFB020; color:#191100; border:none; border-radius:10px; padding:13px 26px; font-weight:700; font-size:15px; cursor:pointer; font-family:'Space Grotesk',sans-serif; }
+  .overlay button:disabled { opacity:0.5; cursor:default; }
+  .overlay .hint { font-size:12px; color:#8A93A3; max-width:320px; line-height:1.6; }
+  .overlay .status { font-size:12px; color:#5EEAD4; font-family:'JetBrains Mono',monospace; min-height:16px; }
+  .overlay .err { font-size:12px; color:#FF8A8A; min-height:16px; }
+
+  #hud { position:fixed; inset:0; pointer-events:none; z-index:20; font-family:'Inter',sans-serif; display:none; }
+  #hud.show { display:block; }
+  #crosshair { position:absolute; top:50%; left:50%; width:6px; height:6px; margin:-3px; border-radius:50%; background:rgba(245,243,238,0.85); }
+  #scoreBox { position:absolute; top:18px; left:18px; background:rgba(30,35,43,0.85); border:1px solid #2E3541; border-radius:12px; padding:10px 16px; }
+  #scoreBox .label { font-size:10px; color:#8A93A3; letter-spacing:0.08em; text-transform:uppercase; font-family:'JetBrains Mono',monospace; }
+  #scoreBox .value { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:22px; color:#FFB020; }
+  #leaderboard { position:absolute; top:18px; right:18px; background:rgba(30,35,43,0.85); border:1px solid #2E3541; border-radius:12px; padding:12px 14px; min-width:150px; }
+  #leaderboard .title { font-size:10px; color:#8A93A3; letter-spacing:0.08em; text-transform:uppercase; font-family:'JetBrains Mono',monospace; margin-bottom:8px; }
+  #leaderboard .row { display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:5px; }
+  #leaderboard .row .n { color:#F5F3EE; font-weight:600; }
+  #leaderboard .row .s { color:#5EEAD4; font-family:'JetBrains Mono',monospace; }
+  #controlsHint { position:absolute; bottom:18px; left:18px; font-size:11px; color:#8A93A3; font-family:'JetBrains Mono',monospace; background:rgba(30,35,43,0.7); padding:8px 12px; border-radius:10px; }
+  #pauseOverlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(11,13,16,0.75); pointer-events:auto; }
+  #pauseOverlay.show { display:flex; }
+  #pauseOverlay .box { background:#1E232B; border:1px solid #2E3541; border-radius:16px; padding:30px 36px; text-align:center; }
+  #pauseOverlay .box div { color:#F5F3EE; font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:18px; margin-bottom:14px; }
+  #pauseOverlay .box small { color:#8A93A3; font-size:12px; display:block; }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<!-- START SCREEN -->
+<div class="overlay" id="startOverlay">
+  <div class="logo">block<span>yard</span> 3D</div>
+  <div class="hint">A small shared voxel course. Collect the glowing orbs, see other players moving around in real time, and check the leaderboard.</div>
+  <input id="nameInput" placeholder="Pick a display name" maxlength="16" />
+  <button id="enterBtn">Enter world</button>
+  <div class="status" id="statusMsg"></div>
+  <div class="err" id="errMsg"></div>
+  <div class="hint">Move: WASD &nbsp;·&nbsp; Look: mouse &nbsp;·&nbsp; Jump: space &nbsp;·&nbsp; Pause: esc</div>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="crosshair"></div>
+  <div id="scoreBox"><div class="label">Orbs</div><div class="value" id="scoreVal">0</div></div>
+  <div id="leaderboard"><div class="title">Players</div><div id="leaderRows"></div></div>
+  <div id="controlsHint">WASD move · mouse look · space jump · esc pause</div>
+  <div id="pauseOverlay"><div class="box"><div>Paused</div><small>Click anywhere to resume</small></div></div>
+</div>
+
+<!-- ==== THREE.JS (r128) ==== -->
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+
+<!-- ==== FIREBASE (compat, classic script) ==== -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+
+<script>
+  // ======================================================================
+  // PASTE YOUR FIREBASE CONFIG HERE (from Firebase console -> Project settings -> Your apps)
+  // ======================================================================
+  const firebaseConfig = {
+    apiKey: "AIzaSyDkvKtgqnm0c4YhWXl2YFMb47Yd11TzKJI",
+    authDomain: "idkk-86a8f.firebaseapp.com",
+    databaseURL: "https://idkk-86a8f-default-rtdb.firebaseio.com",
+    projectId: "idkk-86a8f",
+    storageBucket: "idkk-86a8f.firebasestorage.app",
+    messagingSenderId: "840161820196",
+    appId: "1:840161820196:web:a7c83a2894c88efca0a2b1"
+  };
+  // ======================================================================
+
+  const PLAYER_COLORS = [0xFFB020, 0x5EEAD4, 0xB4A0FF, 0xFF8FB1, 0x7DDF64, 0xFF7A7A];
+
+  let scene, camera, renderer, controls;
+  let uid = null, myName = "";
+  let myColor = PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)];
+  let velocity = new THREE.Vector3();
+  let moveState = { forward:false, back:false, left:false, right:false };
+  let canJump = true;
+  const GRAVITY = 26;
+  const JUMP_SPEED = 9.5;
+  const MOVE_SPEED = 9;
+  const EYE_HEIGHT = 1.7;
+  const PLAYER_RADIUS = 0.5;
+
+  let obstacles = [];
+  let orbs = [];
+  let score = 0;
+
+  let otherPlayers = {}; // uid -> {mesh, label, targetPos, targetRotY}
+  let dbRef = null;
+  let lastSent = 0;
+
+  function initFirebase(){
+    try{
+      firebase.initializeApp(firebaseConfig);
+      return true;
+    }catch(e){
+      console.error(e);
+      return false;
+    }
+  }
+
+  document.getElementById("enterBtn").addEventListener("click", async () => {
+    const name = document.getElementById("nameInput").value.trim();
+    const errEl = document.getElementById("errMsg");
+    const statusEl = document.getElementById("statusMsg");
+    errEl.textContent = "";
+    if(name.length < 2){ errEl.textContent = "Enter a name (2+ characters)"; return; }
+    if(firebaseConfig.apiKey === "PASTE_YOUR_API_KEY"){
+      errEl.textContent = "Firebase config not set yet — this build will run in local-only preview mode.";
+    }
+    myName = name;
+    document.getElementById("enterBtn").disabled = true;
+    statusEl.textContent = "Connecting…";
+
+    let firebaseReady = false;
+    if(firebaseConfig.apiKey !== "PASTE_YOUR_API_KEY"){
+      firebaseReady = initFirebase();
+    }
+
+    if(firebaseReady){
+      try{
+        const cred = await firebase.auth().signInAnonymously();
+        uid = cred.user.uid;
+        dbRef = firebase.database();
+        statusEl.textContent = "Connected. Loading world…";
+      }catch(e){
+        console.error(e);
+        statusEl.textContent = "Could not connect — running local-only.";
+        uid = "local-" + Math.random().toString(36).slice(2, 9);
+        dbRef = null;
+      }
+    } else {
+      uid = "local-" + Math.random().toString(36).slice(2, 9);
+      dbRef = null;
+    }
+
+    startGame();
+  });
+
+  function startGame(){
+    document.getElementById("startOverlay").classList.add("hidden");
+    document.getElementById("hud").classList.add("show");
+    initScene();
+    if(dbRef) initMultiplayer();
+    animate();
+  }
+
+  function initScene(){
+    const canvas = document.getElementById("gameCanvas");
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.Fog(0x87CEEB, 30, 90);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 500);
+
+    renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const sun = new THREE.DirectionalLight(0xffffff, 0.85);
+    sun.position.set(40, 60, 20);
+    sun.castShadow = true;
+    sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
+    sun.shadow.camera.top = 50; sun.shadow.camera.bottom = -50;
+    sun.shadow.mapSize.set(2048, 2048);
+    scene.add(sun);
+
+    const groundGeo = new THREE.PlaneGeometry(120, 120);
+    const groundMat = new THREE.MeshStandardMaterial({ color:0x3FA34D });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const grid = new THREE.GridHelper(120, 60, 0x2c8a3d, 0x2c8a3d);
+    grid.position.y = 0.01;
+    scene.add(grid);
+
+    buildObstacles();
+    buildOrbs();
+
+    controls = new THREE.PointerLockControls(camera, document.body);
+    controls.getObject().position.set(0, EYE_HEIGHT, 10);
+    scene.add(controls.getObject());
+
+    document.body.addEventListener("click", () => { if(!controls.isLocked) controls.lock(); });
+    controls.addEventListener("lock", () => document.getElementById("pauseOverlay").classList.remove("show"));
+    controls.addEventListener("unlock", () => document.getElementById("pauseOverlay").classList.add("show"));
+
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    window.addEventListener("resize", onResize);
+  }
+
+  function boxMesh(w,h,d,color,x,y,z){
+    const geo = new THREE.BoxGeometry(w,h,d);
+    const mat = new THREE.MeshStandardMaterial({ color });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x,y,z);
+    m.castShadow = true; m.receiveShadow = true;
+    scene.add(m);
+    return m;
+  }
+
+  function buildObstacles(){
+    const layout = [
+      [4,2,4, 0xE0951A, -8, 1, -6],
+      [3,4,3, 0x8A93A3, 6, 2, -10],
+      [6,1.5,2, 0xB4A0FF, 0, 0.75, -18],
+      [2,6,2, 0x7C5CFF, -14, 3, -16],
+      [5,2,5, 0xFF7A45, 12, 1, 4],
+      [3,3,3, 0x5EEAD4, -18, 1.5, 8],
+      [8,1,3, 0xFFD27A, 5, 0.5, 16],
+    ];
+    obstacles = layout.map(([w,h,d,c,x,y,z]) => {
+      const mesh = boxMesh(w,h,d,c,x,y,z);
+      return { mesh, minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2, minY:y-h/2, maxY:y+h/2 };
+    });
+  }
+
+  function buildOrbs(){
+    const positions = [
+      [-8,1.4,-2],[6,1.4,-4],[0,1.4,-12],[-14,1.4,-10],[12,1.4,10],
+      [-18,1.4,3],[5,1.4,12],[-4,1.4,6],[10,1.4,-16],[-2,1.4,18]
+    ];
+    orbs = positions.map(([x,y,z]) => {
+      const geo = new THREE.SphereGeometry(0.4, 20, 20);
+      const mat = new THREE.MeshStandardMaterial({ color:0xFFD84A, emissive:0xFFB020, emissiveIntensity:0.6 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x,y,z);
+      mesh.castShadow = true;
+      scene.add(mesh);
+      return { mesh, baseY:y, collected:false, respawnAt:0 };
+    });
+  }
+
+  function onKeyDown(e){
+    switch(e.code){
+      case "KeyW": case "ArrowUp": moveState.forward = true; break;
+      case "KeyS": case "ArrowDown": moveState.back = true; break;
+      case "KeyA": case "ArrowLeft": moveState.left = true; break;
+      case "KeyD": case "ArrowRight": moveState.right = true; break;
+      case "Space":
+        if(canJump){ velocity.y = JUMP_SPEED; canJump = false; }
+        break;
+    }
+  }
+  function onKeyUp(e){
+    switch(e.code){
+      case "KeyW": case "ArrowUp": moveState.forward = false; break;
+      case "KeyS": case "ArrowDown": moveState.back = false; break;
+      case "KeyA": case "ArrowLeft": moveState.left = false; break;
+      case "KeyD": case "ArrowRight": moveState.right = false; break;
+    }
+  }
+  function onResize(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function collidesXZ(x, z){
+    for(const o of obstacles){
+      if(x > o.minX - PLAYER_RADIUS && x < o.maxX + PLAYER_RADIUS &&
+         z > o.minZ - PLAYER_RADIUS && z < o.maxZ + PLAYER_RADIUS &&
+         EYE_HEIGHT < o.maxY + 1.0){
+        return true;
+      }
+    }
+    return false;
+  }
+
+  let clock = new THREE.Clock();
+
+  function updatePhysics(delta){
+    if(!controls.isLocked) return;
+    const obj = controls.getObject();
+
+    velocity.y -= GRAVITY * delta;
+
+    const dir = new THREE.Vector3();
+    dir.z = Number(moveState.forward) - Number(moveState.back);
+    dir.x = Number(moveState.right) - Number(moveState.left);
+    if(dir.lengthSq() > 0) dir.normalize();
+
+    const prevX = obj.position.x, prevZ = obj.position.z;
+
+    if(dir.z !== 0) controls.moveForward(dir.z * MOVE_SPEED * delta);
+    if(collidesXZ(obj.position.x, obj.position.z)){ obj.position.x = prevX; obj.position.z = prevZ; }
+
+    const prevX2 = obj.position.x, prevZ2 = obj.position.z;
+    if(dir.x !== 0) controls.moveRight(dir.x * MOVE_SPEED * delta);
+    if(collidesXZ(obj.position.x, obj.position.z)){ obj.position.x = prevX2; obj.position.z = prevZ2; }
+
+    obj.position.y += velocity.y * delta;
+    if(obj.position.y <= EYE_HEIGHT){
+      obj.position.y = EYE_HEIGHT;
+      velocity.y = 0;
+      canJump = true;
+    }
+
+    const bound = 58;
+    obj.position.x = Math.max(-bound, Math.min(bound, obj.position.x));
+    obj.position.z = Math.max(-bound, Math.min(bound, obj.position.z));
+  }
+
+  function updateOrbs(delta, now){
+    const obj = controls.getObject();
+    for(const orb of orbs){
+      if(orb.collected){
+        if(now > orb.respawnAt){
+          orb.collected = false;
+          orb.mesh.visible = true;
+        }
+        continue;
+      }
+      orb.mesh.rotation.y += delta * 2;
+      orb.mesh.position.y = orb.baseY + Math.sin(now/300 + orb.mesh.position.x) * 0.15;
+      const dx = obj.position.x - orb.mesh.position.x;
+      const dz = obj.position.z - orb.mesh.position.z;
+      const dy = obj.position.y - orb.mesh.position.y;
+      if(dx*dx + dz*dz + dy*dy < 1.4){
+        orb.collected = true;
+        orb.mesh.visible = false;
+        orb.respawnAt = now + 6000;
+        score += 1;
+        document.getElementById("scoreVal").textContent = score;
+        pushMyState(true);
+      }
+    }
+  }
+
+  // ---------- multiplayer ----------
+  function initMultiplayer(){
+    const myRef = dbRef.ref("players/" + uid);
+    myRef.onDisconnect().remove();
+    pushMyState(true);
+
+    dbRef.ref("players").on("value", (snapshot) => {
+      const data = snapshot.val() || {};
+      const seen = new Set();
+      Object.keys(data).forEach((otherUid) => {
+        if(otherUid === uid) return;
+        seen.add(otherUid);
+        const p = data[otherUid];
+        if(!otherPlayers[otherUid]){
+          otherPlayers[otherUid] = createOtherPlayer(p);
+        }
+        const rec = otherPlayers[otherUid];
+        rec.targetPos.set(p.x || 0, (p.y || EYE_HEIGHT) - EYE_HEIGHT, p.z || 0);
+        rec.targetRotY = p.ry || 0;
+        rec.label.userData.setText(p.name || "player");
+        rec.lastScore = p.score || 0;
+      });
+      Object.keys(otherPlayers).forEach((otherUid) => {
+        if(!seen.has(otherUid)){
+          scene.remove(otherPlayers[otherUid].group);
+          delete otherPlayers[otherUid];
+        }
+      });
+      renderLeaderboard(data);
+    });
+  }
+
+  function makeNameSprite(text){
+    const canvas = document.createElement("canvas");
+    canvas.width = 256; canvas.height = 64;
+    const ctx = canvas.getContext("2d");
+    function draw(t){
+      ctx.clearRect(0,0,256,64);
+      ctx.font = "bold 30px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(20,23,28,0.75)";
+      const w = ctx.measureText(t).width + 24;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(128-w/2, 12, w, 40, 10) : ctx.rect(128-w/2, 12, w, 40);
+      ctx.fill();
+      ctx.fillStyle = "#F5F3EE";
+      ctx.fillText(t, 128, 40);
+      texture.needsUpdate = true;
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map:texture, depthTest:false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(2, 0.5, 1);
+    sprite.userData.setText = draw;
+    draw(text);
+    return sprite;
+  }
+
+  function createOtherPlayer(p){
+    const group = new THREE.Group();
+    const color = p.color || 0xFFB020;
+    const bodyGeo = new THREE.CylinderGeometry(0.35, 0.35, 1.1, 12);
+    const bodyMat = new THREE.MeshStandardMaterial({ color });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = 0.85;
+    body.castShadow = true;
+    group.add(body);
+
+    const headGeo = new THREE.SphereGeometry(0.3, 14, 14);
+    const head = new THREE.Mesh(headGeo, bodyMat);
+    head.position.y = 1.55;
+    head.castShadow = true;
+    group.add(head);
+
+    const label = makeNameSprite(p.name || "player");
+    label.position.y = 2.15;
+    group.add(label);
+
+    scene.add(group);
+    return { group, label, targetPos:new THREE.Vector3(0,0,0), targetRotY:0, lastScore:0 };
+  }
+
+  function updateOtherPlayers(delta){
+    Object.values(otherPlayers).forEach((rec) => {
+      rec.group.position.lerp(rec.targetPos, Math.min(1, delta*6));
+      rec.group.rotation.y += (rec.targetRotY - rec.group.rotation.y) * Math.min(1, delta*6);
+    });
+  }
+
+  function pushMyState(force){
+    if(!dbRef) return;
+    const now = Date.now();
+    if(!force && now - lastSent < 200) return;
+    lastSent = now;
+    const obj = controls.getObject();
+    dbRef.ref("players/" + uid).update({
+      name: myName,
+      color: myColor,
+      x: obj.position.x,
+      y: obj.position.y,
+      z: obj.position.z,
+      ry: camera.rotation.y,
+      score: score,
+      t: firebase.database.ServerValue.TIMESTAMP
+    });
+  }
+
+  function renderLeaderboard(data){
+    const rows = Object.keys(data).map(k => ({ name: data[k].name || "player", score: data[k].score || 0, isMe: k===uid }));
+    rows.push({ name: myName + " (you)", score, isMe:true });
+    const dedup = rows.filter((r,i) => !(r.isMe && rows.findIndex(x=>x.isMe)!==i));
+    dedup.sort((a,b) => b.score - a.score);
+    const el = document.getElementById("leaderRows");
+    el.innerHTML = dedup.slice(0,6).map(r => `<div class="row"><span class="n">${escapeHtml(r.name)}</span><span class="s">${r.score}</span></div>`).join("");
+  }
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
+
+  // ---------- loop ----------
+  function animate(){
+    requestAnimationFrame(animate);
+    const delta = Math.min(clock.getDelta(), 0.1);
+    const now = performance.now();
+
+    updatePhysics(delta);
+    updateOrbs(delta, now);
+    updateOtherPlayers(delta);
+    if(dbRef) pushMyState(false);
+    else renderLeaderboard({});
+
+    renderer.render(scene, camera);
+  }
+</script>
+
+</body>
+</html>
